@@ -3,12 +3,12 @@ import pandas as pd
 import numpy as np
 import json
 import os
+import tempfile
 from datetime import datetime
 import logging
 from typing import List, Dict, Any, Tuple
 import PyPDF2
 import re
-import base64
 
 # Vector embeddings and similarity
 from sentence_transformers import SentenceTransformer
@@ -78,7 +78,8 @@ class GroqLlamaAPI:
     """Handles Groq API integration with Llama models"""
 
     def __init__(self, api_key: str = None):
-        self.api_key = "gsk_your_api_key"  # Replace with your actual key
+        # Hardcoded API key
+        self.api_key = "YOUR_GROQ_API_KEY"  # <-- Replace with actual key
         self.base_url = "https://api.groq.com/openai/v1/chat/completions"
         self.model = "moonshotai/kimi-k2-instruct"
 
@@ -128,22 +129,27 @@ class VectorStore:
 
     @st.cache_resource
     def load_embedding_model(_self):
+        """Load sentence transformer model"""
         return SentenceTransformer('all-MiniLM-L6-v2')
 
     def build_index(self, documents: List[Dict]):
+        """Build vector index from documents"""
         if not documents:
             return
 
         self.model = self.load_embedding_model()
         self.documents = documents
 
+        # Extract text chunks
         texts = []
         for doc in documents:
             texts.extend(doc['chunks'])
 
+        # Generate embeddings
         with st.spinner("Generating embeddings..."):
             embeddings = self.model.encode(texts, show_progress_bar=True)
 
+        # Build FAISS index
         dimension = embeddings.shape[1]
         self.index = faiss.IndexFlatIP(dimension)
         self.index.add(embeddings.astype('float32'))
@@ -152,6 +158,7 @@ class VectorStore:
         st.success(f"Vector index built with {len(texts)} text chunks")
 
     def search(self, query: str, k: int = 5) -> List[Tuple[str, float]]:
+        """Search for relevant chunks"""
         if not self.model or not self.index:
             return []
 
@@ -159,7 +166,7 @@ class VectorStore:
         scores, indices = self.index.search(query_embedding.astype('float32'), k)
 
         results = []
-        for score, idx in zip(scores[0], indices[0]):
+        for i, (score, idx) in enumerate(zip(scores[0], indices[0])):
             chunk_count = 0
             for doc in self.documents:
                 if chunk_count + len(doc['chunks']) > idx:
@@ -170,13 +177,22 @@ class VectorStore:
 
         return results
 
-# ------------------- PDF DISPLAY HELPER --------------------
-def display_pdf(pdf_bytes):
-    base64_pdf = base64.b64encode(pdf_bytes).decode('utf-8')
-    pdf_display = f'<iframe src="data:application/pdf;base64,{base64_pdf}" width="100%" height="600" type="application/pdf"></iframe>'
+# ------------------- PDF Preview Helper --------------
+def display_pdf_inline(pdf_bytes, filename):
+    # Save PDF temporarily
+    temp_dir = tempfile.gettempdir()
+    file_path = os.path.join(temp_dir, filename)
+    with open(file_path, "wb") as f:
+        f.write(pdf_bytes)
+
+    # Use st.markdown with iframe to embed inline
+    pdf_display = f"""
+        <iframe src="data:application/pdf;base64,{pdf_bytes.decode('latin1').encode('base64').decode()}" 
+        width="100%" height="600" style="border:none;"></iframe>
+    """
     st.markdown(pdf_display, unsafe_allow_html=True)
 
-# ------------------- MAIN APP ----------------------------
+# ------------------- MAIN APP ------------------------
 def main():
     st.set_page_config(
         page_title="Supply Chain Document Assistant",
@@ -196,21 +212,23 @@ def main():
 
     with st.sidebar:
         st.header("Upload Documents")
-        uploaded_files = st.file_uploader("Upload Files", type=['pdf', 'txt'], accept_multiple_files=True)
+        uploaded_files = st.file_uploader(
+            "Upload Files", type=['pdf', 'txt'], accept_multiple_files=True
+        )
 
-        preview_toggle = st.toggle("Preview PDFs", value=False)
+        preview_toggle = st.checkbox("Enable PDF Preview", value=True)
 
         if uploaded_files and st.button("Process Documents"):
             with st.spinner("Processing documents..."):
                 processed_docs = []
                 for file in uploaded_files:
-                    raw_file = file.getvalue()
+                    file_bytes = file.getvalue()
                     doc_data = {
                         'filename': file.name,
                         'type': file.type,
-                        'size': len(raw_file),
+                        'size': len(file_bytes),
                         'uploaded_at': datetime.now().isoformat(),
-                        'raw_file': raw_file
+                        'raw_file': file_bytes
                     }
 
                     if file.type == 'application/pdf':
@@ -230,16 +248,15 @@ def main():
                     vector_store.build_index(processed_docs)
                     st.session_state.vector_index = vector_store
 
-    if st.session_state.documents and preview_toggle:
-        st.subheader("📄 PDF Previews")
-        for doc in st.session_state.documents:
-            if doc['type'] == 'application/pdf':
-                st.markdown(f"**{doc['filename']}**")
-                display_pdf(doc['raw_file'])
-
     if st.session_state.documents:
-        st.header("💬 Chat with Your Documents")
+        if preview_toggle:
+            st.subheader("📄 PDF Previews")
+            for doc in st.session_state.documents:
+                if doc['type'] == 'application/pdf':
+                    st.markdown(f"**{doc['filename']}**")
+                    display_pdf_inline(doc['raw_file'], doc['filename'])
 
+        st.header("💬 Chat with Your Documents")
         for message in st.session_state.chat_history:
             with st.chat_message(message["role"]):
                 st.write(message["content"])
