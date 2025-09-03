@@ -8,6 +8,7 @@ import logging
 from typing import List, Dict, Any, Tuple
 import PyPDF2
 import re
+import io
 
 # Vector embeddings and similarity
 from sentence_transformers import SentenceTransformer
@@ -16,11 +17,9 @@ import faiss
 # Groq API
 import requests
 
-# Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# ------------------- SESSION STATE -------------------
 def init_session_state():
     if 'documents' not in st.session_state:
         st.session_state.documents = []
@@ -31,10 +30,7 @@ def init_session_state():
     if 'show_pdf' not in st.session_state:
         st.session_state.show_pdf = False
 
-# ------------------- DOCUMENT PROCESSING -------------
 class DocumentProcessor:
-    """Handles document processing and text extraction"""
-
     @staticmethod
     def extract_text_from_pdf(pdf_file) -> str:
         try:
@@ -71,7 +67,6 @@ class DocumentProcessor:
 
         return chunks
 
-# ------------------- GROQ API ------------------------
 class GroqLlamaAPI:
     def __init__(self, api_key: str = None):
         self.api_key = "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"
@@ -111,7 +106,6 @@ Use the provided context to answer questions clearly and concisely."""
             logger.error(f"Unexpected error: {e}")
             return f"Unexpected error: {e}"
 
-# ------------------- VECTOR STORE --------------------
 class VectorStore:
     def __init__(self):
         self.model = None
@@ -163,7 +157,6 @@ class VectorStore:
 
         return results
 
-# ------------------- MAIN APP ------------------------
 def main():
     st.set_page_config(
         page_title="Supply Chain Document Assistant",
@@ -222,7 +215,8 @@ def main():
             for doc in st.session_state.documents:
                 if doc['type'] == 'application/pdf':
                     st.subheader(f"Preview: {doc['filename']}")
-                    st.pdf(doc['raw_file'])
+                    pdf_data = io.BytesIO(doc['raw_file'])
+                    st.pdf(pdf_data)
 
         for message in st.session_state.chat_history:
             with st.chat_message(message["role"]):
