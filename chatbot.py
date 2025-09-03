@@ -28,6 +28,8 @@ def init_session_state():
         st.session_state.vector_index = None
     if 'chat_history' not in st.session_state:
         st.session_state.chat_history = []
+    if 'show_pdf' not in st.session_state:
+        st.session_state.show_pdf = False
 
 # ------------------- DOCUMENT PROCESSING -------------
 class DocumentProcessor:
@@ -35,7 +37,6 @@ class DocumentProcessor:
 
     @staticmethod
     def extract_text_from_pdf(pdf_file) -> str:
-        """Extract text from PDF"""
         try:
             pdf_reader = PyPDF2.PdfReader(pdf_file)
             text = ""
@@ -49,7 +50,6 @@ class DocumentProcessor:
 
     @staticmethod
     def extract_text_from_txt(txt_file) -> str:
-        """Extract text from TXT file"""
         try:
             return txt_file.read().decode('utf-8')
         except Exception as e:
@@ -58,7 +58,6 @@ class DocumentProcessor:
 
     @staticmethod
     def chunk_text(text: str, chunk_size: int = 1000, overlap: int = 200) -> List[str]:
-        """Split text into overlapping chunks"""
         if len(text) <= chunk_size:
             return [text]
 
@@ -74,16 +73,12 @@ class DocumentProcessor:
 
 # ------------------- GROQ API ------------------------
 class GroqLlamaAPI:
-    """Handles Groq API integration with Llama models"""
-
     def __init__(self, api_key: str = None):
-        # Hardcoded API key
-        self.api_key = "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"  # Replace this with your actual key
+        self.api_key = "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"
         self.base_url = "https://api.groq.com/openai/v1/chat/completions"
         self.model = "moonshotai/kimi-k2-instruct"
 
     def generate_response(self, prompt: str, context: str = "", max_tokens: int = 1000) -> str:
-        """Generate AI response"""
         if not self.api_key:
             return "Please configure Groq API key in the sidebar."
 
@@ -118,8 +113,6 @@ Use the provided context to answer questions clearly and concisely."""
 
 # ------------------- VECTOR STORE --------------------
 class VectorStore:
-    """Handles embeddings and similarity search"""
-
     def __init__(self):
         self.model = None
         self.index = None
@@ -128,27 +121,22 @@ class VectorStore:
 
     @st.cache_resource
     def load_embedding_model(_self):
-        """Load sentence transformer model"""
         return SentenceTransformer('all-MiniLM-L6-v2')
 
     def build_index(self, documents: List[Dict]):
-        """Build vector index from documents"""
         if not documents:
             return
 
         self.model = self.load_embedding_model()
         self.documents = documents
 
-        # Extract text chunks
         texts = []
         for doc in documents:
             texts.extend(doc['chunks'])
 
-        # Generate embeddings
         with st.spinner("Generating embeddings..."):
             embeddings = self.model.encode(texts, show_progress_bar=True)
 
-        # Build FAISS index
         dimension = embeddings.shape[1]
         self.index = faiss.IndexFlatIP(dimension)
         self.index.add(embeddings.astype('float32'))
@@ -157,7 +145,6 @@ class VectorStore:
         st.success(f"Vector index built with {len(texts)} text chunks")
 
     def search(self, query: str, k: int = 5) -> List[Tuple[str, float]]:
-        """Search for relevant chunks"""
         if not self.model or not self.index:
             return []
 
@@ -185,23 +172,19 @@ def main():
         initial_sidebar_state="expanded"
     )
 
-    # Init session
     init_session_state()
 
     st.title("📄 Supply Chain Document Analysis Chatbot")
     st.markdown("Upload documents and chat with AI for insights.")
 
-    # Components
     doc_processor = DocumentProcessor()
-    groq_api = GroqLlamaAPI()  # Now uses the hardcoded API key
+    groq_api = GroqLlamaAPI()
     vector_store = VectorStore()
 
-    # Sidebar
     with st.sidebar:
         st.header("Upload Documents")
-        uploaded_files = st.file_uploader(
-            "Upload Files", type=['pdf', 'txt'], accept_multiple_files=True
-        )
+        uploaded_files = st.file_uploader("Upload Files", type=['pdf', 'txt'], accept_multiple_files=True)
+        st.session_state.show_pdf = st.toggle("Show PDF Preview", value=False)
 
         if uploaded_files and st.button("Process Documents"):
             with st.spinner("Processing documents..."):
@@ -223,6 +206,7 @@ def main():
                         chunks = doc_processor.chunk_text(text)
                         doc_data['chunks'] = chunks
                         doc_data['text'] = text
+                        doc_data['raw_file'] = file.getvalue()
                         processed_docs.append(doc_data)
 
                 st.session_state.documents = processed_docs
@@ -231,9 +215,14 @@ def main():
                     vector_store.build_index(processed_docs)
                     st.session_state.vector_index = vector_store
 
-    # Chat interface
     if st.session_state.documents:
         st.header("💬 Chat with Your Documents")
+
+        if st.session_state.show_pdf:
+            for doc in st.session_state.documents:
+                if doc['type'] == 'application/pdf':
+                    st.subheader(f"Preview: {doc['filename']}")
+                    st.pdf(doc['raw_file'])
 
         for message in st.session_state.chat_history:
             with st.chat_message(message["role"]):
@@ -260,6 +249,5 @@ def main():
     else:
         st.info("No documents yet. Upload files from sidebar to begin.")
 
-# ------------------- RUN ----------------------------
 if __name__ == "__main__":
     main()
