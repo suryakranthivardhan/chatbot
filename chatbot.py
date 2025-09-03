@@ -8,7 +8,7 @@ import logging
 from typing import List, Dict, Any, Tuple
 import PyPDF2
 import re
-import io
+import base64
 
 # Vector embeddings and similarity
 from sentence_transformers import SentenceTransformer
@@ -17,9 +17,11 @@ import faiss
 # Groq API
 import requests
 
+# Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+# ------------------- SESSION STATE -------------------
 def init_session_state():
     if 'documents' not in st.session_state:
         st.session_state.documents = []
@@ -27,12 +29,14 @@ def init_session_state():
         st.session_state.vector_index = None
     if 'chat_history' not in st.session_state:
         st.session_state.chat_history = []
-    if 'show_pdf' not in st.session_state:
-        st.session_state.show_pdf = False
 
+# ------------------- DOCUMENT PROCESSING -------------
 class DocumentProcessor:
+    """Handles document processing and text extraction"""
+
     @staticmethod
     def extract_text_from_pdf(pdf_file) -> str:
+        """Extract text from PDF"""
         try:
             pdf_reader = PyPDF2.PdfReader(pdf_file)
             text = ""
@@ -46,6 +50,7 @@ class DocumentProcessor:
 
     @staticmethod
     def extract_text_from_txt(txt_file) -> str:
+        """Extract text from TXT file"""
         try:
             return txt_file.read().decode('utf-8')
         except Exception as e:
@@ -54,6 +59,7 @@ class DocumentProcessor:
 
     @staticmethod
     def chunk_text(text: str, chunk_size: int = 1000, overlap: int = 200) -> List[str]:
+        """Split text into overlapping chunks"""
         if len(text) <= chunk_size:
             return [text]
 
@@ -67,13 +73,17 @@ class DocumentProcessor:
 
         return chunks
 
+# ------------------- GROQ API ------------------------
 class GroqLlamaAPI:
+    """Handles Groq API integration with Llama models"""
+
     def __init__(self, api_key: str = None):
-        self.api_key = "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"
+        self.api_key = "gsk_your_api_key"  # Replace with your actual key
         self.base_url = "https://api.groq.com/openai/v1/chat/completions"
         self.model = "moonshotai/kimi-k2-instruct"
 
     def generate_response(self, prompt: str, context: str = "", max_tokens: int = 1000) -> str:
+        """Generate AI response"""
         if not self.api_key:
             return "Please configure Groq API key in the sidebar."
 
@@ -106,7 +116,10 @@ Use the provided context to answer questions clearly and concisely."""
             logger.error(f"Unexpected error: {e}")
             return f"Unexpected error: {e}"
 
+# ------------------- VECTOR STORE --------------------
 class VectorStore:
+    """Handles embeddings and similarity search"""
+
     def __init__(self):
         self.model = None
         self.index = None
@@ -146,7 +159,7 @@ class VectorStore:
         scores, indices = self.index.search(query_embedding.astype('float32'), k)
 
         results = []
-        for i, (score, idx) in enumerate(zip(scores[0], indices[0])):
+        for score, idx in zip(scores[0], indices[0]):
             chunk_count = 0
             for doc in self.documents:
                 if chunk_count + len(doc['chunks']) > idx:
@@ -157,6 +170,13 @@ class VectorStore:
 
         return results
 
+# ------------------- PDF DISPLAY HELPER --------------------
+def display_pdf(pdf_bytes):
+    base64_pdf = base64.b64encode(pdf_bytes).decode('utf-8')
+    pdf_display = f'<iframe src="data:application/pdf;base64,{base64_pdf}" width="100%" height="600" type="application/pdf"></iframe>'
+    st.markdown(pdf_display, unsafe_allow_html=True)
+
+# ------------------- MAIN APP ----------------------------
 def main():
     st.set_page_config(
         page_title="Supply Chain Document Assistant",
@@ -177,17 +197,20 @@ def main():
     with st.sidebar:
         st.header("Upload Documents")
         uploaded_files = st.file_uploader("Upload Files", type=['pdf', 'txt'], accept_multiple_files=True)
-        st.session_state.show_pdf = st.toggle("Show PDF Preview", value=False)
+
+        preview_toggle = st.toggle("Preview PDFs", value=False)
 
         if uploaded_files and st.button("Process Documents"):
             with st.spinner("Processing documents..."):
                 processed_docs = []
                 for file in uploaded_files:
+                    raw_file = file.getvalue()
                     doc_data = {
                         'filename': file.name,
                         'type': file.type,
-                        'size': len(file.getvalue()),
-                        'uploaded_at': datetime.now().isoformat()
+                        'size': len(raw_file),
+                        'uploaded_at': datetime.now().isoformat(),
+                        'raw_file': raw_file
                     }
 
                     if file.type == 'application/pdf':
@@ -199,7 +222,6 @@ def main():
                         chunks = doc_processor.chunk_text(text)
                         doc_data['chunks'] = chunks
                         doc_data['text'] = text
-                        doc_data['raw_file'] = file.getvalue()
                         processed_docs.append(doc_data)
 
                 st.session_state.documents = processed_docs
@@ -208,15 +230,15 @@ def main():
                     vector_store.build_index(processed_docs)
                     st.session_state.vector_index = vector_store
 
+    if st.session_state.documents and preview_toggle:
+        st.subheader("📄 PDF Previews")
+        for doc in st.session_state.documents:
+            if doc['type'] == 'application/pdf':
+                st.markdown(f"**{doc['filename']}**")
+                display_pdf(doc['raw_file'])
+
     if st.session_state.documents:
         st.header("💬 Chat with Your Documents")
-
-        if st.session_state.show_pdf:
-            for doc in st.session_state.documents:
-                if doc['type'] == 'application/pdf':
-                    st.subheader(f"Preview: {doc['filename']}")
-                    pdf_data = io.BytesIO(doc['raw_file'])
-                    st.pdf(pdf_data)
 
         for message in st.session_state.chat_history:
             with st.chat_message(message["role"]):
@@ -239,7 +261,6 @@ def main():
                     response = groq_api.generate_response(prompt, context)
                     st.write(response)
                     st.session_state.chat_history.append({"role": "assistant", "content": response})
-
     else:
         st.info("No documents yet. Upload files from sidebar to begin.")
 
