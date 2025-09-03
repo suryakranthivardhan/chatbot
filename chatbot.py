@@ -8,6 +8,9 @@ import logging
 from typing import List, Dict, Any, Tuple
 import PyPDF2
 import re
+import io
+import base64
+import streamlit.components.v1 as components
 
 # Vector embeddings and similarity
 from sentence_transformers import SentenceTransformer
@@ -19,6 +22,16 @@ import requests
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+# ------------------- PDF PREVIEW ---------------------
+def show_pdf(file_bytes: bytes):
+    """Display a PDF in the Streamlit app using an iframe."""
+    base64_pdf = base64.b64encode(file_bytes).decode('utf-8')
+    pdf_display = (
+        f'<iframe src="data:application/pdf;base64,{base64_pdf}" '
+        f'width="100%" height="600" type="application/pdf"></iframe>'
+    )
+    components.html(pdf_display, height=600, scrolling=True)
 
 # ------------------- SESSION STATE -------------------
 def init_session_state():
@@ -36,9 +49,9 @@ class DocumentProcessor:
     """Handles document processing and text extraction"""
 
     @staticmethod
-    def extract_text_from_pdf(pdf_file) -> str:
+    def extract_text_from_pdf(pdf_bytes: bytes) -> str:
         try:
-            pdf_reader = PyPDF2.PdfReader(pdf_file)
+            pdf_reader = PyPDF2.PdfReader(io.BytesIO(pdf_bytes))
             text = ""
             for page in pdf_reader.pages:
                 if page.extract_text():
@@ -49,9 +62,9 @@ class DocumentProcessor:
             return ""
 
     @staticmethod
-    def extract_text_from_txt(txt_file) -> str:
+    def extract_text_from_txt(txt_bytes: bytes) -> str:
         try:
-            return txt_file.read().decode('utf-8')
+            return txt_bytes.decode('utf-8')
         except Exception as e:
             logger.error(f"Error reading text file: {e}")
             return ""
@@ -74,13 +87,14 @@ class DocumentProcessor:
 # ------------------- GROQ API ------------------------
 class GroqLlamaAPI:
     def __init__(self, api_key: str = None):
-        self.api_key = "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"
+        # Prefer environment or Streamlit secrets, fall back to manual input
+        self.api_key = api_key or os.environ.get("GROQ_API_KEY") or st.secrets.get("GROQ_API_KEY", "")
         self.base_url = "https://api.groq.com/openai/v1/chat/completions"
         self.model = "moonshotai/kimi-k2-instruct"
 
     def generate_response(self, prompt: str, context: str = "", max_tokens: int = 1000) -> str:
         if not self.api_key:
-            return "Please configure Groq API key in the sidebar."
+            return "Please configure Groq API key in the sidebar or environment."
 
         headers = {
             "Authorization": f"Bearer {self.api_key}",
@@ -112,6 +126,10 @@ Use the provided context to answer questions clearly and concisely."""
             return f"Unexpected error: {e}"
 
 # ------------------- VECTOR STORE --------------------
+@st.cache_resource
+def load_embedding_model():
+    return SentenceTransformer('all-MiniLM-L6-v2')
+
 class VectorStore:
     def __init__(self):
         self.model = None
@@ -119,15 +137,11 @@ class VectorStore:
         self.documents = []
         self.embeddings = None
 
-    @st.cache_resource
-    def load_embedding_model(_self):
-        return SentenceTransformer('all-MiniLM-L6-v2')
-
     def build_index(self, documents: List[Dict]):
         if not documents:
             return
 
-        self.model = self.load_embedding_model()
+        self.model = load_embedding_model()
         self.documents = documents
 
         texts = []
@@ -190,23 +204,24 @@ def main():
             with st.spinner("Processing documents..."):
                 processed_docs = []
                 for file in uploaded_files:
+                    file_bytes = file.getvalue()
                     doc_data = {
                         'filename': file.name,
                         'type': file.type,
-                        'size': len(file.getvalue()),
+                        'size': len(file_bytes),
                         'uploaded_at': datetime.now().isoformat()
                     }
 
                     if file.type == 'application/pdf':
-                        text = doc_processor.extract_text_from_pdf(file)
+                        text = doc_processor.extract_text_from_pdf(file_bytes)
                     else:
-                        text = doc_processor.extract_text_from_txt(file)
+                        text = doc_processor.extract_text_from_txt(file_bytes)
 
                     if text:
                         chunks = doc_processor.chunk_text(text)
                         doc_data['chunks'] = chunks
                         doc_data['text'] = text
-                        doc_data['raw_file'] = file.getvalue()
+                        doc_data['raw_file'] = file_bytes
                         processed_docs.append(doc_data)
 
                 st.session_state.documents = processed_docs
@@ -222,7 +237,7 @@ def main():
             for doc in st.session_state.documents:
                 if doc['type'] == 'application/pdf':
                     st.subheader(f"Preview: {doc['filename']}")
-                    st.pdf(doc['raw_file'])
+                    show_pdf(doc['raw_file'])
 
         for message in st.session_state.chat_history:
             with st.chat_message(message["role"]):
